@@ -326,13 +326,35 @@ module.provider('Restangular', function() {
       };
     };
 
-    config.fullRequestInterceptor = function(element, operation, path, url, headers, params, httpConfig) {
+    config.fullRequestInterceptor = function(element, operation, path, url, headers, params, httpConfig, $q) {
       var interceptors = angular.copy(config.requestInterceptors);
       var defaultRequest = config.defaultInterceptor(element, operation, path, url, headers, params, httpConfig);
-      return _.reduce(interceptors, function(request, interceptor) {
-        return _.extend(request, interceptor(request.element, operation,
-          path, url, request.headers, request.params, request.httpConfig));
-      }, defaultRequest);
+      var deferred = $q.defer();
+      deferred.resolve(defaultRequest);
+	  
+      return _.reduce(interceptors, function(promise, interceptor) {
+        return promise.then(
+		  function (request) {
+		    interceptorReturn = interceptor(request.element, operation, path, url, request.headers, request.params, request.httpConfig);
+		    // Is interceptorReturn a promise?
+		    if (interceptorReturn.then == undefined) {
+		      return _.extend(request, interceptorReturn);
+		    } else {
+		      return interceptorReturn.then(
+			    function (interceptorResponse) {
+				  return _.extend(request, interceptorResponse);
+  			    },
+			    function (errorResponse) {
+				  $q.reject(errorResponse);
+			    }
+			  );
+			}
+		  },
+		  function (errorResponse) {
+		    $q.reject(errorResponse);
+          }
+		)
+      }, deferred.promise);
     };
 
     object.addRequestInterceptor = function(interceptor) {
@@ -1033,79 +1055,83 @@ module.provider('Restangular', function() {
         var url = urlHandler.fetchUrl(this, what);
         var whatFetched = what || __this[config.restangularFields.route];
 
-        var request = config.fullRequestInterceptor(null, operation,
-            whatFetched, url, headers || {}, reqParams || {}, this[config.restangularFields.httpConfig] || {});
-
         var filledArray = [];
-        filledArray = config.transformElem(filledArray, true, whatFetched, service);
 
-        var method = 'getList';
+        config.fullRequestInterceptor(null, operation,
+          whatFetched, url, headers || {}, reqParams || {}, this[config.restangularFields.httpConfig] || {}, $q).then(function(request) {
 
-        if (config.jsonp) {
-          method = 'jsonp';
-        }
+			filledArray = config.transformElem(filledArray, true, whatFetched, service);
 
-        var okCallback = function(response) {
-          var resData = response.data;
-          var fullParams = response.config.params;
-          var data = parseResponse(resData, operation, whatFetched, url, response, deferred);
+			var method = 'getList';
 
-          // support empty response for getList() calls (some APIs respond with 204 and empty body)
-          if (_.isUndefined(data) || '' === data) {
-            data = [];
-          }
-          if (!_.isArray(data)) {
-            throw new Error('Response for getList SHOULD be an array and not an object or something else');
-          }
-          var processedData = _.map(data, function(elem) {
-            if (!__this[config.restangularFields.restangularCollection]) {
-              return restangularizeElem(__this, elem, what, true, data);
-            } else {
-              return restangularizeElem(__this[config.restangularFields.parentResource],
-                elem, __this[config.restangularFields.route], true, data);
-            }
-          });
+			if (config.jsonp) {
+			  method = 'jsonp';
+			}
 
-          processedData = _.extend(data, processedData);
+			var okCallback = function(response) {
+			  var resData = response.data;
+			  var fullParams = response.config.params;
+			  var data = parseResponse(resData, operation, whatFetched, url, response, deferred);
 
-          if (!__this[config.restangularFields.restangularCollection]) {
-            resolvePromise(
-              deferred,
-              response,
-              restangularizeCollection(
-                __this,
-                processedData,
-                what,
-                true,
-                fullParams
-              ),
-              filledArray
-            );
-          } else {
-            resolvePromise(
-              deferred,
-              response,
-              restangularizeCollection(
-                __this[config.restangularFields.parentResource],
-                processedData,
-                __this[config.restangularFields.route],
-                true,
-                fullParams
-              ),
-              filledArray
-            );
-          }
-        };
+			  // support empty response for getList() calls (some APIs respond with 204 and empty body)
+			  if (_.isUndefined(data) || '' === data) {
+				data = [];
+			  }
+			  if (!_.isArray(data)) {
+				throw new Error('Response for getList SHOULD be an array and not an object or something else');
+			  }
+			  var processedData = _.map(data, function(elem) {
+				if (!__this[config.restangularFields.restangularCollection]) {
+				  return restangularizeElem(__this, elem, what, true, data);
+				} else {
+				  return restangularizeElem(__this[config.restangularFields.parentResource],
+					elem, __this[config.restangularFields.route], true, data);
+				}
+			  });
 
-        urlHandler.resource(this, $http, request.httpConfig, request.headers, request.params, what,
-                this[config.restangularFields.etag], operation)[method]().then(okCallback, function error(response) {
-          if (response.status === 304 && __this[config.restangularFields.restangularCollection]) {
-            resolvePromise(deferred, response, __this, filledArray);
-          } else if ( _.every(config.errorInterceptors, function(cb) { return cb(response, deferred, okCallback) !== false; }) ) {
-            // triggered if no callback returns false
-            deferred.reject(response);
-          }
-        });
+			  processedData = _.extend(data, processedData);
+
+			  if (!__this[config.restangularFields.restangularCollection]) {
+				resolvePromise(
+				  deferred,
+				  response,
+				  restangularizeCollection(
+					__this,
+					processedData,
+					what,
+					true,
+					fullParams
+				  ),
+				  filledArray
+				);
+			  } else {
+				resolvePromise(
+				  deferred,
+				  response,
+				  restangularizeCollection(
+					__this[config.restangularFields.parentResource],
+					processedData,
+					__this[config.restangularFields.route],
+					true,
+					fullParams
+				  ),
+				  filledArray
+				);
+			  }
+			};
+
+              urlHandler.resource(__this, $http, request.httpConfig, request.headers, request.params, what,
+					this[config.restangularFields.etag], operation)[method]().then(okCallback, function error(response) {
+			  if (response.status === 304 && __this[config.restangularFields.restangularCollection]) {
+				resolvePromise(deferred, response, __this, filledArray);
+			  } else if ( _.every(config.errorInterceptors, function(cb) { return cb(response, deferred, okCallback) !== false; }) ) {
+				// triggered if no callback returns false
+				deferred.reject(response);
+			  }
+			});
+		},function (interceptorError) {
+		  deferred.reject(interceptorError);
+		});
 
         return restangularizePromise(deferred.promise, true, filledArray);
       }
@@ -1137,71 +1163,76 @@ module.provider('Restangular', function() {
         if (_.isObject(callObj) && config.isRestangularized(callObj)) {
           callObj = stripRestangular(callObj);
         }
-        var request = config.fullRequestInterceptor(callObj, operation, route, fetchUrl,
-          headers || {}, resParams || {}, this[config.restangularFields.httpConfig] || {});
-
+        
         var filledObject = {};
-        filledObject = config.transformElem(filledObject, false, route, service);
 
-        var okCallback = function(response) {
-          var resData = response.data;
-          var fullParams = response.config.params;
-          var elem = parseResponse(resData, operation, route, fetchUrl, response, deferred);
-          if (elem) {
+        config.fullRequestInterceptor(callObj, operation, route, fetchUrl,
+          headers || {}, resParams || {}, this[config.restangularFields.httpConfig] || {}, $q).then(function(request) {
 
-            if (operation === 'post' && !__this[config.restangularFields.restangularCollection]) {
-              resolvePromise(deferred, response, restangularizeElem(__this, elem, what, true, null, fullParams), filledObject);
-            } else {
-              var data = restangularizeElem(
-                __this[config.restangularFields.parentResource],
-                elem,
-                __this[config.restangularFields.route],
-                true,
-                null,
-                fullParams
-              );
+			filledObject = config.transformElem(filledObject, false, route, service);
 
-              data[config.restangularFields.singleOne] = __this[config.restangularFields.singleOne];
-              resolvePromise(deferred, response, data, filledObject);
-            }
+			var okCallback = function(response) {
+			  var resData = response.data;
+			  var fullParams = response.config.params;
+			  var elem = parseResponse(resData, operation, route, fetchUrl, response, deferred);
+			  if (elem) {
 
-          } else {
-            resolvePromise(deferred, response, undefined, filledObject);
-          }
-        };
+				if (operation === 'post' && !__this[config.restangularFields.restangularCollection]) {
+				  resolvePromise(deferred, response, restangularizeElem(__this, elem, what, true, null, fullParams), filledObject);
+				} else {
+				  var data = restangularizeElem(
+					__this[config.restangularFields.parentResource],
+					elem,
+					__this[config.restangularFields.route],
+					true,
+					null,
+					fullParams
+				  );
 
-        var errorCallback = function(response) {
-          if (response.status === 304 && config.isSafe(operation)) {
-            resolvePromise(deferred, response, __this, filledObject);
-          } else if ( _.every(config.errorInterceptors, function(cb) { return cb(response, deferred, okCallback) !== false; }) ) {
-            // triggered if no callback returns false
-            deferred.reject(response);
-          }
-        };
-        // Overring HTTP Method
-        var callOperation = operation;
-        var callHeaders = _.extend({}, request.headers);
-        var isOverrideOperation = config.isOverridenMethod(operation);
-        if (isOverrideOperation) {
-          callOperation = 'post';
-          callHeaders = _.extend(callHeaders, {'X-HTTP-Method-Override': operation === 'remove' ? 'DELETE' : operation});
-        } else if (config.jsonp && callOperation === 'get') {
-          callOperation = 'jsonp';
-        }
+				  data[config.restangularFields.singleOne] = __this[config.restangularFields.singleOne];
+				  resolvePromise(deferred, response, data, filledObject);
+				}
 
-        if (config.isSafe(operation)) {
-          if (isOverrideOperation) {
-            urlHandler.resource(this, $http, request.httpConfig, callHeaders, request.params,
-              what, etag, callOperation)[callOperation]({}).then(okCallback, errorCallback);
-          } else {
-            urlHandler.resource(this, $http, request.httpConfig, callHeaders, request.params,
-              what, etag, callOperation)[callOperation]().then(okCallback, errorCallback);
-          }
-        } else {
-          urlHandler.resource(this, $http, request.httpConfig, callHeaders, request.params,
-            what, etag, callOperation)[callOperation](request.element).then(okCallback, errorCallback);
-        }
+			  } else {
+				resolvePromise(deferred, response, undefined, filledObject);
+			  }
+			};
 
+			var errorCallback = function(response) {
+			  if (response.status === 304 && config.isSafe(operation)) {
+				resolvePromise(deferred, response, __this, filledObject);
+			  } else if ( _.every(config.errorInterceptors, function(cb) { return cb(response, deferred, okCallback) !== false; }) ) {
+				// triggered if no callback returns false
+				deferred.reject(response);
+			  }
+			};
+			// Overring HTTP Method
+			var callOperation = operation;
+			var callHeaders = _.extend({}, request.headers);
+			var isOverrideOperation = config.isOverridenMethod(operation);
+			if (isOverrideOperation) {
+			  callOperation = 'post';
+			  callHeaders = _.extend(callHeaders, {'X-HTTP-Method-Override': operation === 'remove' ? 'DELETE' : operation});
+			} else if (config.jsonp && callOperation === 'get') {
+			  callOperation = 'jsonp';
+			}
+
+			if (config.isSafe(operation)) {
+			  if (isOverrideOperation) {
+			      urlHandler.resource(__this, $http, request.httpConfig, callHeaders, request.params,
+				  what, etag, callOperation)[callOperation]({}).then(okCallback, errorCallback);
+			  } else {
+			      urlHandler.resource(__this, $http, request.httpConfig, callHeaders, request.params,
+				  what, etag, callOperation)[callOperation]().then(okCallback, errorCallback);
+			  }
+			} else {
+			    urlHandler.resource(__this, $http, request.httpConfig, callHeaders, request.params,
+				what, etag, callOperation)[callOperation](request.element).then(okCallback, errorCallback);
+			}
+		}, function (interceptorError) {
+		  deferred.reject(interceptorError);
+		});
+		
         return restangularizePromise(deferred.promise, false, filledObject);
       }
 
